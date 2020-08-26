@@ -317,8 +317,8 @@ void pf_update_resample(pf_t *pf)
 {
   int i;
   double total;
-  pf_sample_set_t *set_a, *set_b;
-  pf_sample_t *sample_a, *sample_b;
+  pf_sample_set_t *set_a, *set_b;   //粒子集合
+  pf_sample_t *sample_a, *sample_b; //单个粒子
 
   //double r,c,U;
   //int m;
@@ -444,12 +444,15 @@ void pf_update_resample(pf_t *pf)
   }
   
   // Re-compute cluster statistics
+  // 聚类
   pf_cluster_stats(pf, set_b);
 
   // Use the newly created sample set
+  // 使用新创建的粒子集
   pf->current_set = (pf->current_set + 1) % 2; 
 
   // 计算粒子是否收敛(相对于平均位置的最大偏差是否超出阈值)
+  // 更新于 pf->converged
   pf_update_converged(pf);
 
   free(c);

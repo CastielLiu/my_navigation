@@ -461,7 +461,7 @@ AmclNode::AmclNode() :
   global_loc_srv_ = nh_.advertiseService("global_localization", 
 					 &AmclNode::globalLocalizationCallback,
                                          this);
-  // 强制更新粒子位姿的服务
+  // 强制更新粒子位姿的服务,无运动的情况下进行粒子更新
   nomotion_update_srv_= nh_.advertiseService("request_nomotion_update", &AmclNode::nomotionUpdateCallback, this);
   set_map_srv_= nh_.advertiseService("set_map", &AmclNode::setMapCallback, this);
 
@@ -585,8 +585,8 @@ void AmclNode::reconfigureCB(AMCLConfig &config, uint32_t level)
                  alpha_slow_, alpha_fast_,
                  (pf_init_model_fn_t)AmclNode::uniformPoseGenerator,
                  (void *)map_);
-  pf_err_ = config.kld_err; 
-  pf_z_ = config.kld_z; 
+  pf_err_ = config.kld_err;
+  pf_z_ = config.kld_z;
   pf_->pop_err = pf_err_;
   pf_->pop_z = pf_z_;
 
@@ -1092,13 +1092,13 @@ AmclNode::setMapCallback(nav_msgs::SetMap::Request& req,
 void
 AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
 {
-  ROS_INFO("laserReceived..........");
+  //ROS_INFO("laserReceived..........");
    //去除字符串的第一个斜线‘/’，如果有
   std::string laser_scan_frame_id = stripSlash(laser_scan->header.frame_id);
   last_laser_received_ts_ = ros::Time::now(); //记录收到点云的时刻
-  if( map_ == NULL ) {
+  if( map_ == NULL ) 
     return;
-  }
+  
   boost::recursive_mutex::scoped_lock lr(configuration_mutex_);
   int laser_index = -1;
 
@@ -1145,7 +1145,9 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
               laser_pose_v.v[2]);
     //记录雷达frame以及对应的雷达索引
     frame_to_laser_[laser_scan_frame_id] = laser_index;
-  } else {
+  } 
+  else 
+  {
     // we have the laser pose, retrieve laser index
      //利用frame_id 确定雷达索引
     laser_index = frame_to_laser_[laser_scan_frame_id];
@@ -1154,8 +1156,9 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
 
 
   // Where was the robot when this scan was taken?
-  pf_vector_t pose;
-  //获取此帧雷达数据时，机器人的位置在哪(相对与odom坐标系)
+  //获取此帧雷达数据时，机器人的位姿(相对与odom坐标系)
+  pf_vector_t pose; 
+  
   if(!getOdomPose(latest_odom_pose_, pose.v[0], pose.v[1], pose.v[2],
                   laser_scan->header.stamp, base_frame_id_))
   {
@@ -1179,8 +1182,14 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     bool update = fabs(delta.v[0]) > d_thresh_ ||
                   fabs(delta.v[1]) > d_thresh_ ||
                   fabs(delta.v[2]) > a_thresh_;
-    //机器人移动超出一定范围，或者需要强制更新时，更新定位
-    update = update || m_force_update;
+    
+    if(!pf_->converged)
+    	m_force_update = true;
+    
+    //ROS_INFO("pf_->converged: %d",pf_->converged);
+                  
+    //机器人移动超出一定范围，或者需要强制更新时，进行粒子更新
+    update = (update || m_force_update);
     m_force_update=false;
 
     // Set the laser update flags
@@ -1190,7 +1199,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
   }
 
   bool force_publication = false;
-  if(!pf_init_)
+  if(!pf_init_) //粒子滤波器未初始化
   {
     // Pose at last filter update
     pf_odom_pose_ = pose;
@@ -1199,6 +1208,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     pf_init_ = true;
 
     // Should update sensor data
+    //需要更新传感器数据
     for(unsigned int i=0; i < lasers_update_.size(); i++)
       lasers_update_[i] = true;
 
@@ -1207,6 +1217,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     resample_count_ = 0;
   }
   // If the robot has moved, update the filter
+  //传感器数据更新，刷新粒子位姿
   else if(pf_init_ && lasers_update_[laser_index])
   {
     //printf("pose\n");
@@ -1305,12 +1316,13 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     pf_odom_pose_ = pose;
 
     // Resample the particles
-    // 粒子重采样，删除权重较低的粒子，添加新的粒子
-    // 对新的粒子集合进行聚类，预估机器人位置
-    // 并判断粒子集合是否收敛
-    if(!(++resample_count_ % resample_interval_))
+    //满足重采样间隔，或者需要强制更新
+    if(!(++resample_count_ % resample_interval_) || m_force_update)
     {
-      pf_update_resample(pf_);
+     // 粒子重采样，删除权重较低的粒子，添加新的粒子
+     // 对新的粒子集合进行聚类，预估机器人位置
+     // 并判断粒子集合是否收敛
+      pf_update_resample(pf_); 
       resampled = true;
     }
 
@@ -1319,7 +1331,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
 
     // Publish the resulting cloud
     // TODO: set maximum rate for publishing
-    if (!m_force_update)
+    //if (!m_force_update) //非强制更新时发布粒子云?
     {
       geometry_msgs::PoseArray cloud_msg;
       cloud_msg.header.stamp = ros::Time::now();
@@ -1337,14 +1349,16 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
       particlecloud_pub_.publish(cloud_msg);
     }
   }
-
+	
+	//粒子已经重采样/强制发布
   if(resampled || force_publication)
   {
     // Read out the current hypotheses
     double max_weight = 0.0;
     int max_weight_hyp = -1;
-    std::vector<amcl_hyp_t> hyps;
+    std::vector<amcl_hyp_t> hyps; //概率表
     hyps.resize(pf_->sets[pf_->current_set].cluster_count);
+    //获取概率最大的cluster
     for(int hyp_count = 0;
         hyp_count < pf_->sets[pf_->current_set].cluster_count; hyp_count++)
     {
@@ -1369,7 +1383,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
         max_weight_hyp = hyp_count;
       }
     }
-
+	
     if(max_weight > 0.0)
     {
       ROS_DEBUG("Max weight pose: %.3f %.3f %.3f",
@@ -1478,6 +1492,8 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
   }
   else if(latest_tf_valid_)
   {
+  	//pose_pub_.publish(last_published_pose);
+      
     if (tf_broadcast_ == true)
     {
       // Nothing changed, so we'll just republish the last transform, to keep
